@@ -6,3 +6,7 @@ PyPDF2
 langdetect
 gspread
 oauth2client
+spacy>=3.5,<3.6
+
+# This line tells pip to fetch the model tarball from the official spaCy releases
+en_core_web_md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.5.0/en_core_web_md-3.5.0-py3-none-any.whl
