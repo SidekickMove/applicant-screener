@@ -1,0 +1,8 @@
+streamlit
+pandas
+spacy
+docx2txt
+PyPDF2
+langdetect
+gspread
+oauth2client
