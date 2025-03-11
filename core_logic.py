@@ -159,16 +159,39 @@ def normalize_dataframe(df):
 
 
 def parse_experiences_lines(experience_text):
-    lines = experience_text.split('\n')
-    pattern = re.compile(r'\bat\s+(.+?)\s*\(')
+    """
+    Returns up to two company names from the user's experience input,
+    no matter if it's "IBM; Apple" or multiline "The Instant Group : Manager"
+    or a mixture.
+    """
+    experience_text = experience_text.strip()
     found_companies = []
-    for line in lines:
-        match = pattern.search(line)
-        if match:
-            company = match.group(1).strip()
-            found_companies.append(company)
+
+    # If they typed something like "IBM; Apple", just split on semicolons:
+    if ";" in experience_text:
+        parts = [p.strip() for p in experience_text.split(";") if p.strip()]
+        for p in parts:
+            found_companies.append(p)
             if len(found_companies) == 2:
                 break
+        return found_companies
+    
+    # Otherwise, assume lines with possible "Company : Title"
+    # (and maybe leading/trailing date info).
+    # We'll look for lines that contain a colon, then treat the text before
+    # the colon as the "company" if it’s not too short.
+    lines = experience_text.splitlines()
+    for line in lines:
+        line = line.strip()
+        if ":" in line:
+            # e.g. "The Instant Group : Accounts Manager"
+            lhs, rhs = line.split(":", maxsplit=1)
+            lhs = lhs.strip()
+            if lhs and len(lhs) > 2:  # Avoid picking empty or nonsense
+                found_companies.append(lhs)
+                if len(found_companies) == 2:
+                    break
+    
     return found_companies
 
 
@@ -240,24 +263,21 @@ def process_applicants(
         else:
             short_answers_okay_count += 1
 
+        # Unified experience parsing & F500 check
         experience_str = str(row.get("experience", "")).strip()
-        if experience_str:
-            companies_found = parse_experiences_lines(experience_str)
-            if companies_found:
-                if any(comp in unallowed_phrases for comp in companies_found):
-                    continue
-            else:
-                exp_parts = [ex.strip() for ex in experience_str.split(";")]
-                if len(exp_parts) == 2:
-                    if exp_parts[0] in unallowed_phrases and exp_parts[1] in unallowed_phrases:
-                        continue
-                elif len(exp_parts) == 1:
-                    if exp_parts[0] in unallowed_phrases:
-                        continue
+        companies_found = parse_experiences_lines(experience_str)
+
+        # If parse_experiences_lines found 1–2 companies, we check those directly
+        if companies_found:
+            # If any of those parsed companies is in the Fortune 500 unallowed list => fail
+            if any(comp in unallowed_phrases for comp in companies_found):
+                continue  # or "row_dict['status'] = 'failed'; row_dict['fail_reason'] = ...; all_rows_data.append(row_dict); continue" if you’re using pass/fail
         else:
+            # If we did NOT parse any company (the user typed something that doesn't match the semicolon/colon patterns),
+            # we fallback to scanning the PDF text for >=2 unallowed matches
             count_f500, matched_f500 = count_unallowed_matches(file_text, unallowed_phrases)
             if count_f500 >= 2:
-                continue
+                continue  # same pass/fail logic as above
 
         no_unallowed_count += 1
 
