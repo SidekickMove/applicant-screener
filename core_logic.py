@@ -636,14 +636,16 @@ import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# After writing the CSV, read it and create a download button:
-with open("detailed_results.csv", "rb") as file:
-    st.download_button(
-        label="Download Detailed Results CSV",
-        data=file,
-        file_name="detailed_results.csv",
-        mime="text/csv"
-    )
+if os.path.exists("detailed_results.csv"):
+    with open("detailed_results.csv", "rb") as file:
+        st.download_button(
+            label="Download Detailed Results CSV",
+            data=file,
+            file_name="detailed_results.csv",
+            mime="text/csv"
+        )
+else:
+    st.write("Detailed results CSV is not available yet.")
 
 def get_gspread_credentials_from_streamlit_secrets():
     """Retrieve credentials from st.secrets to authorize gspread."""
