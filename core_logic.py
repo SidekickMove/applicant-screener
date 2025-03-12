@@ -195,6 +195,48 @@ def parse_experiences_lines(experience_text):
     return found_companies
 
 
+def filter_ignored_questions(answers_str):
+    """
+    Returns a smaller answers_str with only the Q&As from non-ignored questions.
+    The rest is omitted entirely.
+    """
+    blocks = answers_str.split("----------")
+    filtered_lines = []
+    pending_question_text = None
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        parts = block.split(":", maxsplit=1)
+        if len(parts) < 2:
+            continue
+
+        label_text = parts[0].strip()
+        content_text = parts[1].strip()
+
+        # If the label is "Question #", store the question so the next "Answer #" line can match it
+        if label_text.lower().startswith("question "):
+            pending_question_text = content_text
+        elif label_text.lower().startswith("answer "):
+            # We only keep this Q&A if the question was NOT ignored
+            if pending_question_text and not is_ignored_question(pending_question_text):
+                filtered_lines.append(f"Question: {pending_question_text}")
+                filtered_lines.append(f"Answer: {content_text}")
+            pending_question_text = None
+        else:
+            # Some CSVs have the question text in 'label_text' directly,
+            # and the answer in 'content_text'.
+            # We only keep it if the question isn't ignored.
+            if not is_ignored_question(label_text):
+                filtered_lines.append(f"Question: {label_text}")
+                filtered_lines.append(f"Answer: {content_text}")
+
+    # Return the filtered Q&A as a single string
+    return "\n".join(filtered_lines)
+
+
 def process_applicants(
     csv_file,
     pdf_folder,
@@ -247,6 +289,7 @@ def process_applicants(
             answers_str = ""
         else:
             answers_str = str(row.get("answers", ""))
+            answers_str = filter_ignored_questions(answers_str)
 
         combined_text = file_text + " " + answers_str if answers_str else file_text
 
@@ -692,7 +735,3 @@ def append_first_8_columns_to_google_sheet(filtered_df, job_title):
         worksheet.append_row(row_values, value_input_option="RAW")
 
     print(f"Appended {len(sub_df)} rows to worksheet '{job_title}' in your Google Sheet!")
-    sheet_url = f"https://docs.google.com/spreadsheets/d/11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE/edit#gid={worksheet.id}"
-
-    st.write(f"Appended {len(sub_df)} rows to worksheet '{job_title}'!")
-    st.markdown(f"[Click here to view your Google Sheet →]({sheet_url})")
