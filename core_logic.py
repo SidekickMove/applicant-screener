@@ -692,3 +692,7 @@ def append_first_8_columns_to_google_sheet(filtered_df, job_title):
         worksheet.append_row(row_values, value_input_option="RAW")
 
     print(f"Appended {len(sub_df)} rows to worksheet '{job_title}' in your Google Sheet!")
+    sheet_url = f"https://docs.google.com/spreadsheets/d/11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE/edit#gid={worksheet.id}"
+
+    st.write(f"Appended {len(sub_df)} rows to worksheet '{job_title}'!")
+    st.markdown(f"[Click here to view your Google Sheet →]({sheet_url})")
