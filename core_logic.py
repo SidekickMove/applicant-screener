@@ -358,6 +358,11 @@ def process_applicants(
         row_dict["found_optional"] = found_optional
 
         results.append(row_dict)
+    
+    # All rows in a big DataFrame
+    detailed_df = pd.DataFrame(results)
+    detailed_df.to_csv("detailed_results.csv", index=False)
+    print("[INFO] Wrote detailed_results.csv with pass/fail info.")
 
     filtered_df = pd.DataFrame(results)
     return (
@@ -630,6 +635,15 @@ def semantic_keyword_match(pdf_text, answers_text, user_keywords, threshold=0.7)
 import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+
+# After writing the CSV, read it and create a download button:
+with open("detailed_results.csv", "rb") as file:
+    st.download_button(
+        label="Download Detailed Results CSV",
+        data=file,
+        file_name="detailed_results.csv",
+        mime="text/csv"
+    )
 
 def get_gspread_credentials_from_streamlit_secrets():
     """Retrieve credentials from st.secrets to authorize gspread."""
