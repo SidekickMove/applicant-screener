@@ -6,8 +6,10 @@ import docx2txt
 from langdetect import detect
 import spacy
 import sys
+import streamlit as st
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-# Configure sys.stdout/stderr for Unicode
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
@@ -15,10 +17,6 @@ nlp = spacy.load("en_core_web_md")
 
 
 def load_local_fortune500_csv():
-    """
-    Loads 'fortune500.csv' from the same directory as this file.
-    Returns a list of lines (Fortune 500 company names).
-    """
     file_path = os.path.join(os.path.dirname(__file__), "fortune500.csv")
     unallowed = []
     try:
@@ -33,33 +31,21 @@ def load_local_fortune500_csv():
 
 
 def read_csv_with_fallback(csv_file):
-    """
-    Attempts to read the CSV file as UTF-8.
-    If that fails with a UnicodeDecodeError, fallback to 'latin1'.
-    """
-    print(f"\n[DEBUG] Attempting to read CSV: {csv_file}")
     try:
         df = pd.read_csv(csv_file, encoding="utf-8")
-        print("[DEBUG] Successfully read as UTF-8.")
     except UnicodeDecodeError:
-        print("[DEBUG] Retrying with 'latin1' encoding...")
         df = pd.read_csv(csv_file, encoding="latin1")
-    print("[DEBUG] Columns before ANY normalization:", list(df.columns))
     return df
 
 
 def normalize_dataframe(df):
-    """
-    Unifies DataFrame columns from various CSV formats into a standard form.
-    """
-    print("[DEBUG] Stripping + normalizing column names in df...")
     old_cols = df.columns.tolist()
     new_cols = [c.strip() for c in old_cols]
     df.columns = new_cols
 
     if "id" not in df.columns:
         df["id"] = ""
-
+    
     rename_map = {
         "Name": "name",
         "Email": "email",
@@ -73,20 +59,15 @@ def normalize_dataframe(df):
             if col.lower() == old_key.lower():
                 to_rename[col] = new_key
     if to_rename:
-        print("[DEBUG] Will rename columns based on rename_map:", to_rename)
         df.rename(columns=to_rename, inplace=True, errors="ignore")
 
     for col in list(df.columns):
         if "resume" in col.lower() and col.lower() != "download":
-            print(f"[DEBUG] Renaming '{col}' -> 'download' (because it has 'resume').")
             df.rename(columns={col: "download"}, inplace=True, errors="ignore")
 
     for col in list(df.columns):
         if col.lower() == "answers" and col != "answers":
-            print(f"[DEBUG] Renaming '{col}' -> 'answers' (case variation).")
             df.rename(columns={col: "answers"}, inplace=True, errors="ignore")
-
-    print("[DEBUG] Columns after basic rename steps:", list(df.columns))
 
     question_cols = []
     answer_cols = []
@@ -126,17 +107,11 @@ def normalize_dataframe(df):
 
     cols_to_drop = question_cols + answer_cols
     if cols_to_drop:
-        print("[DEBUG] Dropping question/answer columns:", cols_to_drop)
         df.drop(columns=cols_to_drop, inplace=True, errors="ignore")
-
-    print("[DEBUG] Final columns after normalize_dataframe:", list(df.columns))
     return df
 
 
 def parse_experiences_lines(experience_text):
-    """
-    Returns up to two company names from the user's experience input.
-    """
     experience_text = experience_text.strip()
     found_companies = []
     if ";" in experience_text:
@@ -150,7 +125,7 @@ def parse_experiences_lines(experience_text):
     for line in lines:
         line = line.strip()
         if ":" in line:
-            lhs, rhs = line.split(":", maxsplit=1)
+            lhs, _ = line.split(":", maxsplit=1)
             lhs = lhs.strip()
             if lhs and len(lhs) > 2:
                 found_companies.append(lhs)
@@ -172,9 +147,6 @@ def is_ignored_question(question_text):
 
 
 def filter_ignored_questions(answers_str):
-    """
-    Returns a filtered answers_str containing only Q&As from non-ignored questions.
-    """
     blocks = answers_str.split("----------")
     filtered_lines = []
     pending_question_text = None
@@ -233,7 +205,7 @@ def has_two_or_more_short_answers(answers_str, min_words=20):
                 short_count += 1
                 if short_count >= 2:
                     return True
-    return short_count >= 2
+    return False
 
 
 def tokenize_to_words(text):
@@ -368,246 +340,7 @@ def semantic_keyword_match(pdf_text, answers_text, user_keywords, threshold=0.7)
     return False
 
 
-import streamlit as st
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
-# Debug output: list the working directory and files
-st.write("Working Directory:", os.getcwd())
-st.write("Files in Working Directory:", os.listdir("."))
-
-# Download button for detailed_results.csv if it exists
-if os.path.exists("detailed_results.csv"):
-    with open("detailed_results.csv", "rb") as file:
-        st.download_button(
-            label="Download Detailed Results CSV",
-            data=file,
-            file_name="detailed_results.csv",
-            mime="text/csv"
-        )
-else:
-    st.write("Detailed results CSV is not available yet.")
-
-
-def process_applicants(csv_file, pdf_folder, check_dollar, check_percent,
-                       required_text, optional_text, related_text, exclude_answers=False):
-    df = read_csv_with_fallback(csv_file)
-    df = normalize_dataframe(df)
-    unallowed_phrases = load_local_fortune500_csv()
-
-    required_list = [kw.strip() for kw in required_text.split("\n") if kw.strip()]
-    optional_list = [kw.strip() for kw in optional_text.split("\n") if kw.strip()]
-    related_list = [kw.strip() for kw in related_text.split("\n") if kw.strip()]
-
-    pdf_exists_count = 0
-    english_count = 0
-    short_answers_okay_count = 0
-    no_unallowed_count = 0
-    keywords_count = 0
-    final_pass_count = 0
-
-    results = []
-
-    for idx, row in df.iterrows():
-        if "download" not in df.columns:
-            print("No 'download' column found after normalization.")
-            break
-
-        filename = str(row["download"]).strip()
-        file_path = os.path.join(pdf_folder, filename)
-        if not os.path.isfile(file_path):
-            continue
-        pdf_exists_count += 1
-
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext == ".pdf":
-            file_text = extract_pdf_text(file_path)
-        elif ext == ".docx":
-            file_text = extract_docx_text(file_path)
-        else:
-            print(f"Skipping row {idx}: unsupported file type -> {file_path}")
-            continue
-
-        if exclude_answers:
-            answers_str = ""
-        else:
-            answers_str = str(row.get("answers", ""))
-            answers_str = filter_ignored_questions(answers_str)
-
-        combined_text = file_text + " " + answers_str if answers_str else file_text
-
-        if is_english_text(combined_text):
-            english_count += 1
-        else:
-            continue
-
-        if not exclude_answers:
-            if not has_two_or_more_short_answers(answers_str, min_words=20):
-                short_answers_okay_count += 1
-            else:
-                continue
-        else:
-            short_answers_okay_count += 1
-
-        experience_str = str(row.get("experience", "")).strip()
-        companies_found = parse_experiences_lines(experience_str)
-        if companies_found:
-            if any(comp in unallowed_phrases for comp in companies_found):
-                continue
-        else:
-            count_f500, matched_f500 = count_unallowed_matches(file_text, unallowed_phrases)
-            if count_f500 >= 2:
-                continue
-
-        no_unallowed_count += 1
-
-        symbol_base_text = file_text if exclude_answers else (file_text + " " + answers_str)
-        found_symbols = get_found_symbols(symbol_base_text, "", check_dollar, check_percent)
-        if check_dollar and "$" not in found_symbols:
-            continue
-        if check_percent and "%" not in found_symbols:
-            continue
-
-        found_required, all_found_req = get_found_required_with_locations(
-            file_text, answers_str if not exclude_answers else "", required_list, threshold=0.7
-        )
-        if not all_found_req:
-            continue
-
-        found_optional = get_found_optional_with_locations(
-            file_text, answers_str if not exclude_answers else "", optional_list, threshold=0.7
-        )
-
-        if semantic_keyword_match(
-            file_text, answers_str if not exclude_answers else "", related_list, threshold=0.7
-        ):
-            keywords_count += 1
-        else:
-            continue
-
-        final_pass_count += 1
-
-        row_dict = row.to_dict()
-        row_dict["found_symbols"] = {symbol: ", ".join(places) for symbol, places in found_symbols.items()}
-        row_dict["found_required"] = found_required
-        row_dict["found_optional"] = found_optional
-        results.append(row_dict)
-
-    detailed_df = pd.DataFrame(results)
-    detailed_df.to_csv("detailed_results.csv", index=False)
-    print("[INFO] Wrote detailed_results.csv with pass/fail info.")
-
-    filtered_df = pd.DataFrame(results)
-    return (filtered_df, pdf_exists_count, english_count, short_answers_okay_count,
-            no_unallowed_count, keywords_count, final_pass_count)
-
-
-def get_found_symbols(pdf_text, answers_text, check_dollar, check_percent):
-    found_symbols = {}
-    if check_dollar:
-        money_pattern = r"\$\d{1,3}(,\d{3})*(\.\d+)?"
-        places = []
-        if re.search(money_pattern, pdf_text):
-            places.append("pdf")
-        if re.search(money_pattern, answers_text):
-            places.append("answers")
-        if places:
-            found_symbols["$"] = places
-    if check_percent:
-        percent_pattern = r"\d+(\.\d+)?%"
-        places = []
-        if re.search(percent_pattern, pdf_text):
-            places.append("pdf")
-        if re.search(percent_pattern, answers_text):
-            places.append("answers")
-        if places:
-            found_symbols["%"] = places
-    return found_symbols
-
-
-def load_unallowed_phrases(file_path):
-    phrases = []
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                phrase = line.strip()
-                if phrase:
-                    phrases.append(phrase)
-    except Exception as e:
-        print(f"Error loading {file_path}: {e}")
-    return phrases
-
-
-def get_found_required_with_locations(pdf_text, answers_text, required_list, threshold=0.7):
-    found_dict = {}
-    doc_pdf = nlp(pdf_text or "")
-    doc_answers = nlp(answers_text or "")
-    missing_any = False
-    for req_kw in required_list:
-        req_kw_stripped = req_kw.strip()
-        if not req_kw_stripped:
-            continue
-        req_doc = nlp(req_kw_stripped.lower())
-        found_places = []
-        if any(token.similarity(req_doc) >= threshold for token in doc_pdf):
-            found_places.append("pdf")
-        if any(token.similarity(req_doc) >= threshold for token in doc_answers):
-            found_places.append("answers")
-        if found_places:
-            found_dict[req_kw] = found_places
-        else:
-            missing_any = True
-    all_found = not missing_any
-    return found_dict, all_found
-
-
-def get_found_optional_with_locations(pdf_text, answers_text, optional_list, threshold=0.7):
-    found_dict = {}
-    doc_pdf = nlp(pdf_text or "")
-    doc_answers = nlp(answers_text or "")
-    for opt_kw in optional_list:
-        kw_stripped = opt_kw.strip()
-        if not kw_stripped:
-            continue
-        opt_kw_doc = nlp(kw_stripped.lower())
-        found_places = []
-        if any(token.similarity(opt_kw_doc) >= threshold for token in doc_pdf):
-            found_places.append("pdf")
-        if any(token.similarity(opt_kw_doc) >= threshold for token in doc_answers):
-            found_places.append("answers")
-        if found_places:
-            found_dict[opt_kw] = found_places
-    return found_dict
-
-
-def get_found_optional(pdf_text, answers_text, optional_list, threshold=0.7):
-    combined_text = (pdf_text or "") + " " + (answers_text or "")
-    doc = nlp(combined_text)
-    found = []
-    for opt_kw in optional_list:
-        kw_doc = nlp(opt_kw.lower())
-        if any(token.similarity(kw_doc) >= threshold for token in doc):
-            found.append(opt_kw)
-    return found
-
-
-def semantic_keyword_match(pdf_text, answers_text, user_keywords, threshold=0.7):
-    combined_text = (pdf_text or "") + " " + (answers_text or "")
-    doc = nlp(combined_text)
-    kw_docs = [nlp(kw.strip()) for kw in user_keywords if kw.strip()]
-    for token in doc:
-        for kw_doc in kw_docs:
-            if token.similarity(kw_doc) >= threshold:
-                return True
-    return False
-
-
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
-
 def get_gspread_credentials_from_streamlit_secrets():
-    """Retrieve credentials from st.secrets to authorize gspread."""
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -618,9 +351,6 @@ def get_gspread_credentials_from_streamlit_secrets():
 
 
 def append_first_8_columns_to_google_sheet(filtered_df, job_title, credentials_json="sidekick-release-023d0e6de767.json"):
-    """
-    Appends up to 8 columns of 'filtered_df' to a Google Sheet tab named 'job_title'.
-    """
     creds = get_gspread_credentials_from_streamlit_secrets()
     gc = gspread.authorize(creds)
     SPREADSHEET_ID = "11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE"
@@ -634,7 +364,6 @@ def append_first_8_columns_to_google_sheet(filtered_df, job_title, credentials_j
     sub_df = filtered_df.copy()
     drop_cols = ["download", "found_symbols", "found_required", "found_optional", "experience"]
     sub_df.drop(columns=drop_cols, errors="ignore", inplace=True)
-    print("\n[DEBUG] Columns after dropping unwanted:", list(sub_df.columns))
     cols = list(sub_df.columns)
     id_exists = ("id" in cols)
     answers_exists = ("answers" in cols)
@@ -671,8 +400,6 @@ def append_first_8_columns_to_google_sheet(filtered_df, job_title, credentials_j
     final_cols = finalize_columns(proposed, id_exists, answers_exists)
     sub_df = sub_df[final_cols]
     sub_df = sub_df.fillna("")
-    print("[DEBUG] Final columns for Google Sheet:", list(sub_df.columns))
-    print("[DEBUG] Number of rows:", len(sub_df))
     if newly_created and not sub_df.empty:
         headers = list(sub_df.columns)
         worksheet.append_row(headers, value_input_option="RAW")
@@ -680,3 +407,107 @@ def append_first_8_columns_to_google_sheet(filtered_df, job_title, credentials_j
         row_values = row_data.tolist()
         worksheet.append_row(row_values, value_input_option="RAW")
     print(f"Appended {len(sub_df)} rows to worksheet '{job_title}' in your Google Sheet!")
+    sheet_url = f"https://docs.google.com/spreadsheets/d/11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE/edit#gid={worksheet.id}"
+    st.markdown(f"[Click here to view the Google Sheet with results →]({sheet_url})")
+
+
+def process_applicants(csv_file, pdf_folder, check_dollar, check_percent,
+                       required_text, optional_text, related_text, exclude_answers=False):
+    df = read_csv_with_fallback(csv_file)
+    df = normalize_dataframe(df)
+    unallowed_phrases = load_local_fortune500_csv()
+    required_list = [kw.strip() for kw in required_text.split("\n") if kw.strip()]
+    optional_list = [kw.strip() for kw in optional_text.split("\n") if kw.strip()]
+    related_list = [kw.strip() for kw in related_text.split("\n") if kw.strip()]
+    pdf_exists_count = 0
+    english_count = 0
+    short_answers_okay_count = 0
+    no_unallowed_count = 0
+    keywords_count = 0
+    final_pass_count = 0
+    results = []
+    for idx, row in df.iterrows():
+        if "download" not in df.columns:
+            break
+        filename = str(row["download"]).strip()
+        file_path = os.path.join(pdf_folder, filename)
+        if not os.path.isfile(file_path):
+            continue
+        pdf_exists_count += 1
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".pdf":
+            file_text = extract_pdf_text(file_path)
+        elif ext == ".docx":
+            file_text = extract_docx_text(file_path)
+        else:
+            continue
+        if exclude_answers:
+            answers_str = ""
+        else:
+            answers_str = str(row.get("answers", ""))
+            answers_str = filter_ignored_questions(answers_str)
+        combined_text = file_text + " " + answers_str if answers_str else file_text
+        if is_english_text(combined_text):
+            english_count += 1
+        else:
+            continue
+        if not exclude_answers:
+            if not has_two_or_more_short_answers(answers_str, min_words=20):
+                short_answers_okay_count += 1
+            else:
+                continue
+        else:
+            short_answers_okay_count += 1
+        experience_str = str(row.get("experience", "")).strip()
+        companies_found = parse_experiences_lines(experience_str)
+        if companies_found:
+            if any(comp in unallowed_phrases for comp in companies_found):
+                continue
+        else:
+            count_f500, _ = count_unallowed_matches(file_text, unallowed_phrases)
+            if count_f500 >= 2:
+                continue
+        no_unallowed_count += 1
+        symbol_base_text = file_text if exclude_answers else (file_text + " " + answers_str)
+        found_symbols = get_found_symbols(symbol_base_text, "", check_dollar, check_percent)
+        if check_dollar and "$" not in found_symbols:
+            continue
+        if check_percent and "%" not in found_symbols:
+            continue
+        found_required, all_found_req = get_found_required_with_locations(
+            file_text, answers_str if not exclude_answers else "", required_list, threshold=0.7
+        )
+        if not all_found_req:
+            continue
+        found_optional = get_found_optional_with_locations(
+            file_text, answers_str if not exclude_answers else "", optional_list, threshold=0.7
+        )
+        if semantic_keyword_match(
+            file_text, answers_str if not exclude_answers else "", related_list, threshold=0.7
+        ):
+            keywords_count += 1
+        else:
+            continue
+        final_pass_count += 1
+        row_dict = row.to_dict()
+        row_dict["found_symbols"] = {symbol: ", ".join(places) for symbol, places in found_symbols.items()}
+        row_dict["found_required"] = found_required
+        row_dict["found_optional"] = found_optional
+        results.append(row_dict)
+    detailed_df = pd.DataFrame(results)
+    detailed_df.to_csv("detailed_results.csv", index=False)
+    filtered_df = pd.DataFrame(results)
+    return (filtered_df, pdf_exists_count, english_count, short_answers_okay_count,
+            no_unallowed_count, keywords_count, final_pass_count)
+
+
+if os.path.exists("detailed_results.csv"):
+    with open("detailed_results.csv", "rb") as file:
+        st.download_button(
+            label="Download Detailed Results CSV",
+            data=file,
+            file_name="detailed_results.csv",
+            mime="text/csv"
+        )
+else:
+    st.write("Detailed results CSV is not available yet.")
