@@ -98,10 +98,11 @@ def main():
         appended_info = ""
         if job_title.strip() and not filtered_df.empty:
             num_to_append = len(filtered_df)
-            core_logic.append_first_8_columns_to_google_sheet(filtered_df, job_title.strip())
+            sheet_url = core_logic.append_first_8_columns_to_google_sheet(filtered_df, job_title.strip())
             appended_info = f"Appended {num_to_append} rows to worksheet '{job_title.strip()}' in your Google Sheet!"
+            st.markdown(f"[Click here to view the Google Sheet with results →]({sheet_url})")
         else:
-            appended_info = "No job title or no passing rows => skipping Google Sheets append."
+            appended_info = "No job title or empty DataFrame => skipping Google Sheets append."
 
         # 10) Optionally save filtered results locally for your reference
         filtered_df.to_csv("filtered_applicants.csv", index=False)
