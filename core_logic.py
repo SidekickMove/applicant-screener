@@ -520,8 +520,9 @@ def append_first_8_columns_to_google_sheet(filtered_df, job_title, credentials_j
     for _, row_data in sub_df.iterrows():
         row_values = row_data.tolist()
         worksheet.append_row(row_values, value_input_option="RAW")
+    print(f"Appended {len(sub_df)} rows to worksheet '{job_title}' in your Google Sheet!")
     sheet_url = f"https://docs.google.com/spreadsheets/d/11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE/edit#gid={worksheet.id}"
-    st.markdown(f"[Click here to view the Google Sheet with results →]({sheet_url})")
+    return sheet_url
 
 
 if os.path.exists("detailed_results.csv"):
