@@ -340,6 +340,30 @@ def semantic_keyword_match(pdf_text, answers_text, user_keywords, threshold=0.7)
     return False
 
 
+# Define get_found_symbols before process_applicants so it is available.
+def get_found_symbols(pdf_text, answers_text, check_dollar, check_percent):
+    found_symbols = {}
+    if check_dollar:
+        money_pattern = r"\$\d{1,3}(,\d{3})*(\.\d+)?"
+        places = []
+        if re.search(money_pattern, pdf_text):
+            places.append("pdf")
+        if re.search(money_pattern, answers_text):
+            places.append("answers")
+        if places:
+            found_symbols["$"] = places
+    if check_percent:
+        percent_pattern = r"\d+(\.\d+)?%"
+        places = []
+        if re.search(percent_pattern, pdf_text):
+            places.append("pdf")
+        if re.search(percent_pattern, answers_text):
+            places.append("answers")
+        if places:
+            found_symbols["%"] = places
+    return found_symbols
+
+
 def get_gspread_credentials_from_streamlit_secrets():
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -348,67 +372,6 @@ def get_gspread_credentials_from_streamlit_secrets():
     service_account_info = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
     return creds
-
-
-def append_first_8_columns_to_google_sheet(filtered_df, job_title, credentials_json="sidekick-release-023d0e6de767.json"):
-    creds = get_gspread_credentials_from_streamlit_secrets()
-    gc = gspread.authorize(creds)
-    SPREADSHEET_ID = "11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE"
-    sh = gc.open_by_key(SPREADSHEET_ID)
-    try:
-        worksheet = sh.worksheet(job_title)
-        newly_created = False
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title=job_title, rows=100, cols=8)
-        newly_created = True
-    sub_df = filtered_df.copy()
-    drop_cols = ["download", "found_symbols", "found_required", "found_optional", "experience"]
-    sub_df.drop(columns=drop_cols, errors="ignore", inplace=True)
-    cols = list(sub_df.columns)
-    id_exists = ("id" in cols)
-    answers_exists = ("answers" in cols)
-    if id_exists:
-        cols.remove("id")
-    if answers_exists:
-        cols.remove("answers")
-    proposed = []
-    if id_exists:
-        proposed.append("id")
-    proposed.extend(cols)
-    if answers_exists:
-        proposed.append("answers")
-    def finalize_columns(col_order, has_id, has_ans):
-        if len(col_order) <= 8:
-            return col_order
-        have_both = (has_id and has_ans)
-        have_only_id = (has_id and not has_ans)
-        have_only_answers = (has_ans and not has_id)
-        if have_both:
-            middle = col_order[1:-1]
-            trimmed_middle = middle[:6]
-            return ["id"] + trimmed_middle + ["answers"]
-        elif have_only_id:
-            middle = col_order[1:]
-            trimmed_middle = middle[:7]
-            return ["id"] + trimmed_middle
-        elif have_only_answers:
-            middle = col_order[:-1]
-            trimmed_middle = middle[:7]
-            return trimmed_middle + ["answers"]
-        else:
-            return col_order[:8]
-    final_cols = finalize_columns(proposed, id_exists, answers_exists)
-    sub_df = sub_df[final_cols]
-    sub_df = sub_df.fillna("")
-    if newly_created and not sub_df.empty:
-        headers = list(sub_df.columns)
-        worksheet.append_row(headers, value_input_option="RAW")
-    for _, row_data in sub_df.iterrows():
-        row_values = row_data.tolist()
-        worksheet.append_row(row_values, value_input_option="RAW")
-    print(f"Appended {len(sub_df)} rows to worksheet '{job_title}' in your Google Sheet!")
-    sheet_url = f"https://docs.google.com/spreadsheets/d/11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE/edit#gid={worksheet.id}"
-    st.markdown(f"[Click here to view the Google Sheet with results →]({sheet_url})")
 
 
 def process_applicants(csv_file, pdf_folder, check_dollar, check_percent,
@@ -499,6 +462,66 @@ def process_applicants(csv_file, pdf_folder, check_dollar, check_percent,
     filtered_df = pd.DataFrame(results)
     return (filtered_df, pdf_exists_count, english_count, short_answers_okay_count,
             no_unallowed_count, keywords_count, final_pass_count)
+
+
+def append_first_8_columns_to_google_sheet(filtered_df, job_title, credentials_json="sidekick-release-023d0e6de767.json"):
+    creds = get_gspread_credentials_from_streamlit_secrets()
+    gc = gspread.authorize(creds)
+    SPREADSHEET_ID = "11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE"
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    try:
+        worksheet = sh.worksheet(job_title)
+        newly_created = False
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = sh.add_worksheet(title=job_title, rows=100, cols=8)
+        newly_created = True
+    sub_df = filtered_df.copy()
+    drop_cols = ["download", "found_symbols", "found_required", "found_optional", "experience"]
+    sub_df.drop(columns=drop_cols, errors="ignore", inplace=True)
+    cols = list(sub_df.columns)
+    id_exists = ("id" in cols)
+    answers_exists = ("answers" in cols)
+    if id_exists:
+        cols.remove("id")
+    if answers_exists:
+        cols.remove("answers")
+    proposed = []
+    if id_exists:
+        proposed.append("id")
+    proposed.extend(cols)
+    if answers_exists:
+        proposed.append("answers")
+    def finalize_columns(col_order, has_id, has_ans):
+        if len(col_order) <= 8:
+            return col_order
+        have_both = (has_id and has_ans)
+        have_only_id = (has_id and not has_ans)
+        have_only_answers = (has_ans and not has_id)
+        if have_both:
+            middle = col_order[1:-1]
+            trimmed_middle = middle[:6]
+            return ["id"] + trimmed_middle + ["answers"]
+        elif have_only_id:
+            middle = col_order[1:]
+            trimmed_middle = middle[:7]
+            return ["id"] + trimmed_middle
+        elif have_only_answers:
+            middle = col_order[:-1]
+            trimmed_middle = middle[:7]
+            return trimmed_middle + ["answers"]
+        else:
+            return col_order[:8]
+    final_cols = finalize_columns(proposed, id_exists, answers_exists)
+    sub_df = sub_df[final_cols]
+    sub_df = sub_df.fillna("")
+    if newly_created and not sub_df.empty:
+        headers = list(sub_df.columns)
+        worksheet.append_row(headers, value_input_option="RAW")
+    for _, row_data in sub_df.iterrows():
+        row_values = row_data.tolist()
+        worksheet.append_row(row_values, value_input_option="RAW")
+    sheet_url = f"https://docs.google.com/spreadsheets/d/11RLDHCyscViRceW8N_8I3okMcSKtHn-XPcJuPPNTeBE/edit#gid={worksheet.id}"
+    st.markdown(f"[Click here to view the Google Sheet with results →]({sheet_url})")
 
 
 if os.path.exists("detailed_results.csv"):
