@@ -23,7 +23,6 @@ def main():
     csv_file = st.file_uploader("Upload Applicants CSV File:", type=["csv"])
     if csv_file is None:
         st.info("Please upload a CSV file to begin.")
-        return
 
     # 3) Multiple PDF/DOCX uploads
     uploaded_files = st.file_uploader(
@@ -33,7 +32,6 @@ def main():
     )
     if not uploaded_files:
         st.info("Please upload one or more PDF or DOCX files.")
-        return
 
     # 4) Checkboxes for symbol checks
     check_dollar = st.checkbox("Check for $ symbol", value=False)
