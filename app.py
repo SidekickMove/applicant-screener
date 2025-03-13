@@ -32,6 +32,7 @@ def main():
     )
     if not uploaded_files:
         st.info("Please upload one or more PDF or DOCX files.")
+        return
 
     # 4) Checkboxes for symbol checks
     check_dollar = st.checkbox("Check for $ symbol", value=False)
